@@ -1,0 +1,91 @@
+{
+  "name": "bolt",
+  "displayName": "Bolt",
+  "description": "language support for mcbeet/bolt",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.118.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "bolt",
+        "aliases": [
+          "Bolt",
+          "bolt"
+        ],
+        "extensions": [
+          ".bolt"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "semanticTokenTypes": [
+      {
+        "id": "variable",
+        "description": "Variable"
+      },
+      {
+        "id": "function",
+        "description": "Function"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "bolt",
+        "scopeName": "source.bolt",
+        "path": "./syntaxes/bolt.tmLanguage.json"
+      }
+    ],
+    "configurationDefaults": {
+      "editor.semanticTokenColorCustomizations": {
+        "rules": {
+          "bolt-comment": "#6A9955",
+          "bolt-string": "#CE9178",
+          "bolt-number": "#B5CEA8",
+          "bolt-keyword": "#569CD6",
+          "bolt-function": "#DCDCAA",
+          "bolt-function.definition": "#FFD700",
+          "bolt-function.tag": "#4EC9B0",
+          "bolt-BIEType": "#4FC1FF",
+          "bolt-BIEType.tag": "#3DAEEF",
+          "bolt-dataType": "#CE9178",
+          "bolt-dataType.tag": "#D7BA7D",
+          "bolt-otherType": "#6A9955",
+          "bolt-otherType.tag": "#4EC9B0",
+          "bolt-variable": "#9CDCFE",
+          "bolt-variable.definition": "#4FC1FF",
+          "bolt-variable.tag": "#4EC9B0",
+          "bolt-parameter": "#9CDCFE",
+          "bolt-command": "#f47547",
+          "bolt-dataGen": "#3B9E9E",
+          "bolt-macro": "#C586C0",
+          "bolt-selector": "#00df61",
+          "bolt-nbt-key": "#54FCFC",
+          "bolt-nbt-string": "#54FC54",
+          "bolt-nbt-number": "#FCA800",
+          "bolt-nbt-type": "#FC5454"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/vscode": "^1.118.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}
