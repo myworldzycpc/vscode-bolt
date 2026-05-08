@@ -238,8 +238,7 @@ async def on_open(ls: LanguageServer, params: DidOpenTextDocumentParams):
     """当文件打开时，发送一个诊断示例"""
     first_line = params.text_document.text.split("\n")[0]
     ls.window_show_message(ShowMessageParams(MessageType.Info, f"欢迎使用 {first_line} ！"))
-    # 发送虚假诊断
-    diagnostics = [Diagnostic(range=Range(Position(0, 0), Position(0, 5)), message="示例警告：检查你的代码", severity=DiagnosticSeverity.Warning)]
+    # diagnostics = [Diagnostic(range=Range(Position(0, 0), Position(0, 5)), message="示例警告：检查你的代码", severity=DiagnosticSeverity.Warning)]
     ls.text_document_publish_diagnostics(PublishDiagnosticsParams(params.text_document.uri, diagnostics))
     parse(ls, ls.workspace.get_text_document(params.text_document.uri))
 
@@ -253,8 +252,8 @@ async def on_change(ls: LanguageServer, params: DidChangeTextDocumentParams):
 async def completions(ls: LanguageServer, params: CompletionParams):
     """提供代码补全"""
     items = [
-        CompletionItem(label="hello", kind=12, insert_text="hello()"),
-        CompletionItem(label="world", kind=12, insert_text="world()"),
+        # CompletionItem(label="hello", kind=12, insert_text="hello()"),
+        # CompletionItem(label="world", kind=12, insert_text="world()"),
     ]
     return CompletionList(is_incomplete=False, items=items)
 
