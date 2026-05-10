@@ -16,6 +16,19 @@
 				"${workspaceFolder}/out/**/*.js"
 			],
 			"preLaunchTask": "${defaultBuildTask}"
+		},
+		{
+			"name": "Launch Language Server",
+			"type": "debugpy",
+			"request": "launch",
+			"module": "src.server.main",
+			"justMyCode": false
+		}
+	],
+	"compounds": [
+		{
+			"name": "Debug Extension with Language Server",
+			"configurations": ["Run Extension", "Launch Language Server"]
 		}
 	]
 }

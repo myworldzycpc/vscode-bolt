@@ -1,6 +1,7 @@
 import json
 import operator
 import re
+import os
 from enum import Enum
 
 import beet
@@ -11,8 +12,8 @@ from functools import reduce
 import attrs
 from pathlib import Path
 
-from bolt import AstTargetIdentifier, AstValue, AstIdentifier
-from mecha import AstNode, AstResourceLocation, AstBlock, AstSelector, AstNbtCompoundKey, AstNbtValue, AstJsonObjectKey, AstJsonValue
+from bolt import AstFormatString, AstFunctionSignature, AstFunctionSignatureArgument, AstFunctionSignatureElement, AstKeyword, AstTargetIdentifier, AstValue, AstIdentifier
+from mecha import AstMacroLine, AstMacroLineText, AstMacroLineVariable, AstNode, AstResourceLocation, AstBlock, AstSelector, AstNbtCompoundKey, AstNbtValue, AstJsonObjectKey, AstJsonValue, AstString
 from pygls.lsp.server import LanguageServer
 from lsprotocol.types import *
 from pygls.workspace import TextDocument
@@ -20,6 +21,37 @@ from tokenstream import SourceLocation
 
 server = LanguageServer("bolt-lsp", "v0.1")
 tokens = {}
+
+
+@attrs.define
+class Scope:
+    parent: Optional["Scope"] = None
+    variables: dict[str, VariableType] = attrs.field(factory=dict)
+
+
+@attrs.define
+class VariableType:
+    name: str
+    scope: Scope
+    declaration: Optional[AstNode] = None
+
+
+@attrs.define
+class NamespacedId:
+    namespace: str
+    id: str
+
+
+@attrs.define
+class DataObject:
+    namespaced_id: NamespacedId
+
+
+@attrs.define
+class SymbolTable:
+    scopes: list[Scope] = attrs.field(factory=list)
+    functions: list[DataObject] = attrs.field(factory=list)
+    predicates: list[DataObject] = attrs.field(factory=list)
 
 
 class CustomTokenTypes(Enum):
@@ -45,11 +77,9 @@ class CustomTokenTypes(Enum):
 
 class CustomTokenModifiers(Enum):
     TAG = "tag"
-    DECLARATION = "declaration"
     DEFINITION = "definition"
-    READONLY = "readonly"
-    STATIC = "static"
-    DEPRECATED = "deprecated"
+    MACRO = "macro"
+    VARIABLE = "variable"
 
 
 def find_nearest_ancestor_file(start_path, target_filename):
@@ -93,26 +123,14 @@ def progress_diagnostics(ls: LanguageServer, doc: TextDocument, raw_diagnostics:
     ls.text_document_publish_diagnostics(PublishDiagnosticsParams(doc.uri, diagnostics))
 
 
-def parse(ls: LanguageServer, doc: TextDocument):
-    beet_config_path = find_nearest_ancestor_file(doc.path, "beet.json")
-    if beet_config_path:
-        with open(beet_config_path, "r", encoding="utf-8") as f:
-            raw_config = json.load(f)
-
-        config = {
-            "data_pack": raw_config["data_pack"],
-            "pipeline": ["mecha"],
-            "require": ["bolt"],
-        }
-    else:
-        config = {
-            "pipeline": ["mecha"],
-            "require": ["bolt"],
-        }
+async def parse(ls: LanguageServer, doc: TextDocument):
+    ls.window_log_message(LogMessageParams(type=MessageType.Info, message=f"开始解析文件：{doc.path}"))
+    source = doc.source.replace("\r\n", "\n")
     try:
-        with beet.run_beet(config) as ctx:
+        with beet.run_beet({"require": ["bolt"]}) as ctx:
             mc = ctx.inject(mecha.Mecha)
-            ast = mc.parse(source=doc.source)
+            parse_source = source.replace('./', '~/')
+            ast = mc.parse(source=parse_source, filename=doc.path)
         ls.text_document_publish_diagnostics(PublishDiagnosticsParams(doc.uri, []))
     except mecha.diagnostic.DiagnosticErrorSummary as e:
         progress_diagnostics(ls, doc, e.diagnostics)
@@ -125,7 +143,7 @@ def parse(ls: LanguageServer, doc: TextDocument):
     this_tokens = tokens[doc.uri]
 
     def range_text(range: tuple[SourceLocation, SourceLocation]):
-        return doc.source[range[0].pos:range[1].pos]
+        return source[range[0].pos:range[1].pos]
 
     def add_token(range: tuple[SourceLocation, SourceLocation], type: CustomTokenTypes, modifiers: set[CustomTokenModifiers] | None = None):
         if modifiers is None:
@@ -138,7 +156,7 @@ def parse(ls: LanguageServer, doc: TextDocument):
             type=type,
             modifiers=modifiers,
         ))
-        # ls.window_log_message(LogMessageParams(type=MessageType.Info, message=f"添加标记：{text}({range[0].lineno - 1}, {range[0].colno - 1}) {type} {modifiers}"))
+        ls.window_log_message(LogMessageParams(type=MessageType.Info, message=f"添加标记：{text}({range[0].lineno - 1}, {range[0].colno - 1}, {range[0].pos}) {type} {modifiers}"))
 
     def node_range(node: AstNode):
         return node.location, node.end_location
@@ -172,6 +190,8 @@ def parse(ls: LanguageServer, doc: TextDocument):
         if isinstance(node, AstNode):
             identifier = getattr(node, "identifier", None)
             match node:
+                case AstMacroLine():
+                    add_token((node.location, node.location.with_horizontal_offset(1)), CustomTokenTypes.COMMAND)
                 case mecha.AstCommand():
                     match identifier:
                         case 'function:name:commands':
@@ -179,13 +199,15 @@ def parse(ls: LanguageServer, doc: TextDocument):
                             add_token(node_range(node.arguments[0]), CustomTokenTypes.FUNCTION, {CustomTokenModifiers.DEFINITION})
                         case 'say:message':
                             add_token(begin_word_range(node), CustomTokenTypes.COMMAND)
+                        case 'execute:subcommand':
+                            add_token((node.location, node.arguments[0].location), CustomTokenTypes.COMMAND)
                         case 'execute:if:block:pos:block:subcommand':
-                            add_token(begin_word_range(node, 2), CustomTokenTypes.COMMAND)
+                            add_token(select_word_to_skip(node, [["if"], ["block"]]), CustomTokenTypes.COMMAND)
                         case 'if:condition:body':
                             add_token(select_word_to_skip(node, [["if"]]), CustomTokenTypes.KEYWORD)
                         case 'else:body':
                             add_token(select_word_to_skip(node, [["else"]]), CustomTokenTypes.KEYWORD)
-                        case 'function:name':
+                        case 'function:name' | 'function:name:arguments':
                             add_token(begin_word_range(node), CustomTokenTypes.COMMAND)
                             add_token(node_range(node.arguments[0]), CustomTokenTypes.FUNCTION)
                         case 'tellraw:targets:message':
@@ -195,7 +217,13 @@ def parse(ls: LanguageServer, doc: TextDocument):
                             add_token((node.arguments[0].end_location, node.arguments[1].location), CustomTokenTypes.KEYWORD)
                         case 'predicate:name:content':
                             add_token(begin_word_range(node), CustomTokenTypes.DATA_GEN)
-                            add_token(node_range(node.arguments[0]), CustomTokenTypes.DATA_TYPE, {CustomTokenModifiers.DEFINITION})
+                            if isinstance(node.arguments[0], AstResourceLocation):
+                                add_token(node_range(node.arguments[0]), CustomTokenTypes.DATA_TYPE, {CustomTokenModifiers.DEFINITION})
+                        case 'def:function:body':
+                            add_token(select_word_to_skip(node, [["def"]]), CustomTokenTypes.KEYWORD)
+                        case 'summon:entity:pos:nbt':
+                            add_token(begin_word_range(node), CustomTokenTypes.COMMAND)
+                            add_token(node_range(node.arguments[0]), CustomTokenTypes.BIE_TYPE)
                 case AstBlock():
                     match identifier:
                         case AstResourceLocation():
@@ -205,6 +233,12 @@ def parse(ls: LanguageServer, doc: TextDocument):
                                 add_token(node_range(node), CustomTokenTypes.BIE_TYPE)
                 case mecha.AstCoordinate():
                     add_token(node_range(node), CustomTokenTypes.NUMBER)
+                case AstFormatString():
+                    last_edge = node.location
+                    for argument in node.values:
+                        add_token((last_edge, argument.location), CustomTokenTypes.STRING)
+                        last_edge = argument.end_location
+                    add_token((last_edge, node.end_location), CustomTokenTypes.STRING)
                 case mecha.AstString() | mecha.AstMessageText():
                     add_token(node_range(node), CustomTokenTypes.STRING)
                 case AstTargetIdentifier():
@@ -225,6 +259,17 @@ def parse(ls: LanguageServer, doc: TextDocument):
                         add_token(node_range(node), CustomTokenTypes.NBT_NUMBER)
                     else:
                         add_token(node_range(node), CustomTokenTypes.NBT_STRING)
+                case AstFunctionSignature():
+                    add_token(select_word_to_skip(node, [[node.name]]), CustomTokenTypes.VARIABLE, {CustomTokenModifiers.DEFINITION})
+                case AstMacroLineText():
+                    add_token(node_range(node), CustomTokenTypes.COMMAND, {CustomTokenModifiers.MACRO})
+                case AstMacroLineVariable():
+                    add_token(node_range(node), CustomTokenTypes.NBT_KEY, {CustomTokenModifiers.MACRO, CustomTokenModifiers.VARIABLE})
+                case AstFunctionSignatureElement():
+                    add_token(node_range(node), CustomTokenTypes.PARAMETER, {CustomTokenModifiers.DEFINITION})
+                case AstKeyword():
+                    add_token(select_word_to_skip(node, [[node.name]]), CustomTokenTypes.PARAMETER)
+    await ls.workspace_semantic_tokens_refresh_async(None)
 
 
 @server.feature(INITIALIZE)
@@ -240,13 +285,17 @@ async def on_open(ls: LanguageServer, params: DidOpenTextDocumentParams):
     # ls.window_show_message(ShowMessageParams(MessageType.Info, f"欢迎使用 {first_line} ！"))
     # diagnostics = [Diagnostic(range=Range(Position(0, 0), Position(0, 5)), message="示例警告：检查你的代码", severity=DiagnosticSeverity.Warning)]
     # ls.text_document_publish_diagnostics(PublishDiagnosticsParams(params.text_document.uri, diagnostics))
-    parse(ls, ls.workspace.get_text_document(params.text_document.uri))
+    await parse(ls, ls.workspace.get_text_document(params.text_document.uri))
 
 
 @server.feature(TEXT_DOCUMENT_DID_CHANGE)
 async def on_change(ls: LanguageServer, params: DidChangeTextDocumentParams):
-    parse(ls, ls.workspace.get_text_document(params.text_document.uri))
+    await parse(ls, ls.workspace.get_text_document(params.text_document.uri))
 
+
+# @server.feature(TEXT_DOCUMENT_DID_SAVE)
+# async def on_save(ls: LanguageServer, params: DidSaveTextDocumentParams):
+#     await parse(ls, ls.workspace.get_text_document(params.text_document.uri))
 
 @server.feature(TEXT_DOCUMENT_COMPLETION)
 async def completions(ls: LanguageServer, params: CompletionParams):
@@ -284,7 +333,7 @@ async def semantic_tokens_full(ls, params: SemanticTokensParams):
             this_col,
             len(token.text),
             list(CustomTokenTypes).index(token.type),
-            reduce(operator.or_, [list(CustomTokenModifiers).index(m) for m in token.modifiers], 0)
+            reduce(operator.or_, [1 << list(CustomTokenModifiers).index(m) for m in token.modifiers], 0)
         ])
     return SemanticTokens(data)
 
@@ -292,8 +341,9 @@ async def semantic_tokens_full(ls, params: SemanticTokensParams):
 @server.feature(TEXT_DOCUMENT_DEFINITION)
 async def definition(ls, params: DefinitionParams):
     """提供定义"""
-    return [Location(uri=params.text_document.uri, range=Range(Position(0, 0), Position(0, 5)))]
+    # return [Location(uri=params.text_document.uri, range=Range(Position(0, 0), Position(0, 5)))]
 
 
 if __name__ == "__main__":
     server.start_io()
+    # server.start_tcp("127.0.0.1", 5000)
